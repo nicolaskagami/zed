@@ -63,6 +63,12 @@ impl RustLspAdapter {
     const ARCH_SERVER_NAME: &str = "unknown-freebsd";
 }
 
+#[cfg(target_os = "illumos")]
+impl RustLspAdapter {
+    const GITHUB_ASSET_KIND: AssetKind = AssetKind::Gz;
+    const ARCH_SERVER_NAME: &str = "unknown-illumos";
+}
+
 #[cfg(target_os = "windows")]
 impl RustLspAdapter {
     const GITHUB_ASSET_KIND: AssetKind = AssetKind::Zip;

@@ -1,29 +1,43 @@
+#[cfg(not(target_os = "illumos"))]
 use crash_handler::{CrashEventResult, CrashHandler};
+#[cfg(not(target_os = "illumos"))]
 use log::info;
+#[cfg(not(target_os = "illumos"))]
 use minidumper::{LoopAction, MinidumpBinary, Server, SocketName};
+#[cfg(not(target_os = "illumos"))]
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::{panic::Location, pin::Pin};
+use std::pin::Pin;
 
+#[cfg(not(target_os = "illumos"))]
 use system_specs::GpuSpecs;
 
+#[cfg(not(target_os = "illumos"))]
 use std::{
-    env,
     fs::{self, File},
-    io, panic,
-    path::{Path, PathBuf},
+    io,
+    panic::Location,
     process::{self},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     thread,
+};
+
+use std::{
+    env, panic,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
+#[cfg(not(target_os = "illumos"))]
 pub use minidumper::Client;
 
+#[cfg(target_os = "illumos")]
+pub struct Client;
+
+#[cfg(not(target_os = "illumos"))]
 const CRASH_HANDLER_PING_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(target_os = "illumos"))]
 const CRASH_HANDLER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Force a backtrace to be printed on panic.
@@ -39,11 +53,30 @@ pub fn force_backtrace() {
     }));
 }
 
+/// No-op crash handler for platforms without minidumper support.
+#[cfg(target_os = "illumos")]
+pub fn init<F, S, C, P>(
+    _crash_init: InitCrashHandler,
+    _spawn: S,
+    _socket_path: P,
+    _wait_timer: C,
+) -> impl Future<Output = Arc<Client>>
+where
+    F: Future<Output = ()> + Send + Sync + 'static,
+    C: (Fn(Duration) -> F) + Send + Sync + 'static,
+    S: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
+    P: FnOnce(u32) -> PathBuf,
+{
+    force_backtrace();
+    async { Arc::new(Client) }
+}
+
 /// Install crash signal handlers and spawn the crash-handler subprocess.
 ///
 /// All work happens lazily in the returned future, so it runs on whichever
 /// executor polls it. The keepalive task is passed to `spawn` so the caller
 /// decides which executor to schedule it on.
+#[cfg(not(target_os = "illumos"))]
 pub fn init<F, S, C, P>(
     crash_init: InitCrashHandler,
     spawn: S,
@@ -62,6 +95,7 @@ where
 /// Spawn the crash-handler subprocess, connect the IPC client, and run the
 /// keepalive ping loop. This is the future returned by [`init`], so it runs on
 /// whichever executor the caller polls it with.
+#[cfg(not(target_os = "illumos"))]
 async fn connect_and_keepalive<F, C, S, P>(
     crash_init: InitCrashHandler,
     socket_path: P,
@@ -176,6 +210,7 @@ where
     client
 }
 
+#[cfg(not(target_os = "illumos"))]
 pub struct CrashServer {
     initialization_params: Mutex<Option<InitCrashHandler>>,
     panic_info: Mutex<Option<CrashPanic>>,
@@ -186,6 +221,7 @@ pub struct CrashServer {
     logs_dir: PathBuf,
 }
 
+#[cfg(not(target_os = "illumos"))]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct CrashInfo {
     pub init: InitCrashHandler,
@@ -206,6 +242,7 @@ pub struct CrashInfo {
 /// recover the message with `process_vm_readv`; the crashed process itself
 /// can't safely do this work, since its heap may be corrupt and its allocator
 /// locks may be held by the crashed thread.
+#[cfg(not(target_os = "illumos"))]
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
 pub struct AbortMessageLocation {
     pub pid: u32,
@@ -233,6 +270,7 @@ pub struct UserInfo {
     pub is_staff: Option<bool>,
 }
 
+#[cfg(not(target_os = "illumos"))]
 fn send_crash_server_message(crash_client: &Arc<Client>, message: CrashServerMessage) {
     let data = match serde_json::to_vec(&message) {
         Ok(data) => data,
@@ -247,14 +285,17 @@ fn send_crash_server_message(crash_client: &Arc<Client>, message: CrashServerMes
     }
 }
 
+#[cfg(not(target_os = "illumos"))]
 pub fn set_gpu_info(crash_client: &Arc<Client>, specs: GpuSpecs) {
     send_crash_server_message(crash_client, CrashServerMessage::GPUInfo(specs));
 }
 
+#[cfg(not(target_os = "illumos"))]
 pub fn set_user_info(crash_client: &Arc<Client>, info: UserInfo) {
     send_crash_server_message(crash_client, CrashServerMessage::UserInfo(info));
 }
 
+#[cfg(not(target_os = "illumos"))]
 #[derive(Serialize, Deserialize, Debug)]
 enum CrashServerMessage {
     Init(InitCrashHandler),
@@ -367,6 +408,7 @@ fn read_process_memory(pid: u32, address: u64, len: usize) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+#[cfg(not(target_os = "illumos"))]
 impl minidumper::ServerHandler for CrashServer {
     fn create_minidump_file(&self) -> Result<(File, PathBuf), io::Error> {
         let dump_path = self
@@ -480,6 +522,7 @@ impl minidumper::ServerHandler for CrashServer {
 /// Rust's string-slicing panics embed the user's string content in the message,
 /// e.g. "byte index 4 is out of bounds of `a`". Strip that suffix so we
 /// don't upload arbitrary user text in crash reports.
+#[cfg(not(target_os = "illumos"))]
 fn strip_user_string_from_panic(message: &str) -> String {
     const STRING_PANIC_PREFIXES: &[&str] = &[
         // Older rustc (pre-1.95):
@@ -503,6 +546,7 @@ fn strip_user_string_from_panic(message: &str) -> String {
     message.to_owned()
 }
 
+#[cfg(not(target_os = "illumos"))]
 pub fn panic_hook(crash_client: Arc<Client>, message: &str, location: Option<&Location>) {
     let message = strip_user_string_from_panic(message);
 
@@ -578,7 +622,7 @@ mod macos {
         }
     }
 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "illumos")))]
 fn spawn_crash_handler(exe: &Path, socket_name: &Path) -> async_process::Child {
     async_process::Command::new(exe)
         .arg("--crash-handler")
@@ -638,6 +682,12 @@ fn spawn_crash_handler(exe: &Path, socket_name: &Path) {
     }
 }
 
+#[cfg(target_os = "illumos")]
+pub fn crash_server(_socket: &Path, _logs_dir: PathBuf) {
+    log::warn!("crash reporting is not supported on this platform");
+}
+
+#[cfg(not(target_os = "illumos"))]
 pub fn crash_server(socket: &Path, logs_dir: PathBuf) {
     let Ok(mut server) = Server::with_name(SocketName::Path(socket)) else {
         log::info!("Couldn't create socket, there may already be a running crash server");

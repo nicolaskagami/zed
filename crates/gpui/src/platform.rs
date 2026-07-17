@@ -20,7 +20,7 @@ mod visual_test;
 
 #[cfg(all(
     feature = "screen-capture",
-    any(target_os = "windows", target_os = "linux", target_os = "freebsd",)
+    any(target_os = "windows", target_os = "linux", target_os = "freebsd", target_os = "illumos",)
 ))]
 pub mod scap_screen_capture;
 
@@ -42,7 +42,7 @@ use crate::{
     RenderImageParams, RenderSvgParams, Scene, ShapedGlyph, ShapedRun, SharedString, Size,
     SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea, hash, point, px, size,
 };
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
 use anyhow::bail;
 use anyhow::{Context as _, Result};
 use async_task::Runnable;
@@ -92,7 +92,7 @@ pub use visual_test::VisualTestPlatform;
 // TODO(jk): return an enum instead of a string
 /// Return which compositor we're guessing we'll use.
 /// Does not attempt to connect to the given compositor.
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
 #[inline]
 pub fn guess_compositor() -> &'static str {
     if std::env::var_os("ZED_HEADLESS").is_some() {
@@ -259,9 +259,9 @@ pub trait Platform: 'static {
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn write_to_clipboard(&self, item: ClipboardItem);
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
     fn read_from_primary(&self) -> Option<ClipboardItem>;
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
     fn write_to_primary(&self, item: ClipboardItem);
 
     #[cfg(target_os = "macos")]
@@ -477,7 +477,7 @@ impl WindowButton {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
     fn index(&self) -> usize {
         match self {
             WindowButton::Minimize => 0,
@@ -502,7 +502,7 @@ pub struct WindowButtonLayout {
     pub right: [Option<WindowButton>; MAX_BUTTONS_PER_SIDE],
 }
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"))]
 impl WindowButtonLayout {
     /// Returns Zed's built-in fallback button layout for Linux titlebars.
     pub fn linux_default() -> Self {
@@ -1154,7 +1154,7 @@ pub enum AtlasKey {
 impl AtlasKey {
     #[cfg_attr(
         all(
-            any(target_os = "linux", target_os = "freebsd"),
+            any(target_os = "linux", target_os = "freebsd", target_os = "illumos"),
             not(any(feature = "x11", feature = "wayland"))
         ),
         allow(dead_code)
@@ -1270,7 +1270,7 @@ pub struct AtlasTextureId {
 #[repr(C)]
 #[cfg_attr(
     all(
-        any(target_os = "linux", target_os = "freebsd"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos"),
         not(any(feature = "x11", feature = "wayland"))
     ),
     allow(dead_code)
@@ -1308,7 +1308,7 @@ pub struct PlatformInputHandler {
 #[expect(missing_docs)]
 #[cfg_attr(
     all(
-        any(target_os = "linux", target_os = "freebsd"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos"),
         not(any(feature = "x11", feature = "wayland"))
     ),
     allow(dead_code)
@@ -1337,7 +1337,7 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos", target_os = "windows"),
         allow(dead_code)
     )]
     pub fn text_for_range(
@@ -1739,7 +1739,7 @@ pub struct WindowOptions {
 #[derive(Debug)]
 #[cfg_attr(
     all(
-        any(target_os = "linux", target_os = "freebsd"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos"),
         not(any(feature = "x11", feature = "wayland"))
     ),
     allow(dead_code)
@@ -1753,35 +1753,35 @@ pub struct WindowParams {
     pub titlebar: Option<TitlebarOptions>,
 
     /// The kind of window to create
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     pub kind: WindowKind,
 
     /// Whether the window should be movable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     pub is_movable: bool,
 
     /// Whether the application owns dragging of the (custom) titlebar (macOS only)
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos", target_os = "windows"),
         allow(dead_code)
     )]
     pub app_owns_titlebar_drag: bool,
 
     /// Whether the window should be resizable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     pub is_resizable: bool,
 
     /// Whether the window should be minimized by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     pub is_minimizable: bool,
 
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        any(target_os = "linux", target_os = "freebsd", target_os = "illumos", target_os = "windows"),
         allow(dead_code)
     )]
     pub focus: bool,
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     pub show: bool,
 
     /// An image to set as the window icon (x11 only)
@@ -2549,7 +2549,7 @@ impl ClipboardString {
             .and_then(|m| serde_json::from_str(m).ok())
     }
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd", target_os = "illumos"), allow(dead_code))]
     /// Compute a hash of the given text for clipboard change detection.
     pub fn text_hash(text: &str) -> u64 {
         let mut hasher = SeaHasher::new();
@@ -2607,7 +2607,7 @@ mod image_tests {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+#[cfg(all(test, any(target_os = "linux", target_os = "freebsd", target_os = "illumos")))]
 mod tests {
     use super::*;
     use std::collections::HashSet;

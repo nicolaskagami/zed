@@ -460,6 +460,14 @@ impl FileHandle for std::fs::File {
         Ok(new_path)
     }
 
+    #[cfg(target_os = "illumos")]
+    fn current_path(&self, _: &Arc<dyn Fs>) -> Result<PathBuf> {
+        let fd = self.as_fd();
+        let fd_path = format!("/proc/self/path/{}", fd.as_raw_fd());
+        let new_path = std::fs::read_link(fd_path)?;
+        Ok(new_path)
+    }
+
     #[cfg(target_os = "freebsd")]
     fn current_path(&self, _: &Arc<dyn Fs>) -> Result<PathBuf> {
         use std::{

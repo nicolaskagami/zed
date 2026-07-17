@@ -113,6 +113,11 @@ pub fn os_name() -> String {
         format!("FreeBSD {}", gpui::guess_compositor())
     }
 
+    #[cfg(target_os = "illumos")]
+    {
+        format!("illumos {}", gpui::guess_compositor())
+    }
+
     #[cfg(target_os = "windows")]
     {
         "Windows".to_string()
@@ -141,7 +146,7 @@ pub fn os_version() -> String {
                .replace_all(&version_string, "")
                .to_string()
        }
-       any(target_os = "linux", target_os = "freebsd") => {
+       any(target_os = "linux", target_os = "freebsd", target_os = "illumos") => {
            use std::path::Path;
 
            let content = if let Ok(file) = std::fs::read_to_string(&Path::new("/etc/os-release")) {

@@ -1302,7 +1302,7 @@ impl Window {
             window_min_size,
             window_decorations,
             #[cfg_attr(
-                not(any(target_os = "linux", target_os = "freebsd")),
+                not(any(target_os = "linux", target_os = "freebsd", target_os = "illumos")),
                 allow(unused_variables)
             )]
             icon,
@@ -2360,7 +2360,8 @@ impl Window {
         if cfg!(any(
             target_os = "windows",
             target_os = "linux",
-            target_os = "freebsd"
+            target_os = "freebsd",
+            target_os = "illumos"
         )) {
             self.hovered.get()
         } else {
