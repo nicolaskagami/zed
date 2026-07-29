@@ -167,6 +167,16 @@ pub trait Platform: 'static {
     /// Returns the appearance of the application's windows.
     fn window_appearance(&self) -> WindowAppearance;
 
+    /// Overrides the appearance (light/dark) applied to the app's windows, independent
+    /// of the OS-wide setting. Pass `None` to clear the override and follow the system
+    /// again. The override is reflected by [`Platform::window_appearance`].
+    ///
+    /// Currently only implemented on macOS, where it sets `NSApplication.appearance` so
+    /// the native window chrome (the window border and titlebar) of every window matches
+    /// a dark app theme even when the system is in light mode (or vice versa). A no-op on
+    /// other platforms.
+    fn set_window_appearance(&self, _appearance: Option<WindowAppearance>) {}
+
     /// Returns the window button layout configuration when supported.
     fn button_layout(&self) -> Option<WindowButtonLayout> {
         None
@@ -239,6 +249,46 @@ pub trait Platform: 'static {
     fn thermal_state(&self) -> ThermalState;
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>);
 
+    /// Sets the application's process-wide identity and user-visible name.
+    ///
+    /// The identifier is used for platform identity mechanisms such as the
+    /// Windows AppUserModelID. The name is used wherever the operating system
+    /// presents the application to the user. Call this once, early in startup,
+    /// before opening windows or posting notifications.
+    fn set_app_identity(&self, identifier: &str, name: &str) {
+        _ = (identifier, name);
+    }
+
+    /// Posts a notification to the operating system's notification center.
+    ///
+    /// Posting a notification whose [`SystemNotification::tag`] matches an
+    /// earlier one replaces that notification where the platform supports it.
+    /// No-op on platforms without notification support, or when delivery is
+    /// unavailable (e.g. authorization was denied).
+    fn show_system_notification(&self, notification: SystemNotification) {
+        _ = notification;
+    }
+
+    /// Removes the delivered or pending notification with this tag.
+    ///
+    /// Best-effort: some platforms cannot retract a notification once shown,
+    /// in which case it ages out of the notification center on its own.
+    fn dismiss_system_notification(&self, tag: &str) {
+        _ = tag;
+    }
+
+    /// Registers the callback invoked when the user activates a system
+    /// notification, either by clicking its body or one of its action
+    /// buttons.
+    ///
+    /// Implementations must invoke the callback on the main thread.
+    fn on_system_notification_response(
+        &self,
+        callback: Box<dyn FnMut(SystemNotificationResponse)>,
+    ) {
+        _ = callback;
+    }
+
     fn compositor_name(&self) -> &'static str {
         ""
     }
@@ -307,6 +357,43 @@ pub trait PlatformDisplay: Debug {
         let origin = point(center.x - offset.width, center.y - offset.height);
         Bounds::new(origin, clipped_window_size)
     }
+}
+
+/// A notification posted to the operating system's notification center,
+/// rather than rendered as in-app UI.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemNotification {
+    /// Stable identity for the notification. Posting a new notification with
+    /// the same tag replaces the previous one where the platform supports it,
+    /// and responses carry the tag back to the application.
+    pub tag: SharedString,
+    /// The notification's headline.
+    pub title: SharedString,
+    /// Additional text displayed below the title.
+    pub body: SharedString,
+    /// Buttons offered on the notification. Platforms that cannot display
+    /// action buttons show the notification without them.
+    pub actions: Vec<SystemNotificationAction>,
+}
+
+/// A button offered on a [`SystemNotification`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SystemNotificationAction {
+    /// Identifies the action in [`SystemNotificationResponse::action_id`]
+    /// when the user presses this button.
+    pub id: SharedString,
+    /// The button's user-visible label.
+    pub label: SharedString,
+}
+
+/// The user's activation of a [`SystemNotification`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemNotificationResponse {
+    /// The [`SystemNotification::tag`] of the activated notification.
+    pub tag: SharedString,
+    /// The pressed action button's [`SystemNotificationAction::id`], or
+    /// `None` when the user activated the notification body itself.
+    pub action_id: Option<SharedString>,
 }
 
 /// Thermal state of the system
@@ -920,6 +1007,19 @@ pub trait PlatformDispatcher: Send + Sync {
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, priority: Priority);
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant);
 
+    fn dispatch_on_main_thread_when_idle(
+        &self,
+        runnable: RunnableVariant,
+        timeout: Option<Duration>,
+    ) {
+        let _ = timeout;
+        self.dispatch_on_main_thread(runnable, Priority::Low);
+    }
+
+    fn idle_time_remaining(&self) -> Option<Duration> {
+        None
+    }
+
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>);
 
     fn now(&self) -> Instant {
@@ -1502,10 +1602,18 @@ impl PlatformInputHandler {
             .unwrap_or(true)
     }
 
-    #[allow(dead_code)]
+    /// See [`InputHandler::prefers_ime_for_printable_keys`].
+    ///
+    /// This is not a pure delegation to the handler: while a multi-stroke binding is pending this
+    /// returns `false` regardless of the handler's preference, because the next printable key may
+    /// complete a binding whose prefix already bypassed the IME.
     pub fn query_prefers_ime_for_printable_keys(&mut self) -> bool {
         self.cx
-            .update(|window, cx| self.handler.prefers_ime_for_printable_keys(window, cx))
+            .update(|window, cx| {
+                // The next printable key may complete a chord whose prefix bypassed the IME.
+                !window.has_pending_keystrokes()
+                    && self.handler.prefers_ime_for_printable_keys(window, cx)
+            })
             .unwrap_or(false)
     }
 }
