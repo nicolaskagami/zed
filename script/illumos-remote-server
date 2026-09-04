@@ -1,0 +1,38 @@
+#!/bin/sh
+
+set -eu
+
+repo=${1:-"$HOME/zed"}
+install_dir="$HOME/.local/lib/zed-illumos"
+server="$install_dir/remote_server"
+previous="$server.previous"
+new="$server.new.$$"
+
+export PATH="$HOME/.cargo/bin:$PATH"
+
+cd "$repo"
+
+if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+    printf '%s\n' "Cannot build while the repository has merge conflicts" >&2
+    exit 1
+fi
+
+# Debug builds normally read assets from the checkout at runtime.
+cargo build -p remote_server --features debug-embed,util/debug-embed
+
+mkdir -p "$install_dir"
+trap 'rm -f "$new"' EXIT HUP INT TERM
+cp target/debug/remote_server "$new"
+chmod 755 "$new"
+
+printf '%s' "Built Illumos server: "
+"$new" version
+
+rm -f "$previous"
+if [ -e "$server" ]; then
+    ln "$server" "$previous"
+fi
+mv -f "$new" "$server"
+trap - EXIT HUP INT TERM
+
+printf '%s\n' "Installed: $server"

@@ -1,0 +1,45 @@
+#!/bin/sh
+
+server=/home/nicolas/.local/lib/zed-illumos/remote_server
+command=${SSH_ORIGINAL_COMMAND-}
+
+case "$command" in
+    "")
+        exec "${SHELL:-/bin/sh}" -l
+        ;;
+    *uname\ -sm*)
+        printf '%s\n' "Linux x86_64"
+        exit 0
+        ;;
+esac
+
+# Make every client-selected Zed server path use the native Illumos build.
+case "$command" in
+    *'.zed_server/zed-remote-server-'*)
+        case "$command" in
+            *version*|*proxy*)
+                if [ ! -x "$server" ]; then
+                    printf '%s\n' "Zed Illumos server is not installed: $server" >&2
+                    exit 127
+                fi
+
+                rewritten=$(
+                    printf '%s\n' "$command" |
+                        /usr/bin/sed \
+                            -e "s#'[^']*\\.zed_server/zed-remote-server-[[:alnum:]_.+-]*'#'$server'#g" \
+                            -e "s#\"[^\"]*\\.zed_server/zed-remote-server-[[:alnum:]_.+-]*\"#'$server'#g" \
+                            -e "s#[[:alnum:]_\$./~+-]*\\.zed_server/zed-remote-server-[[:alnum:]_.+-]*#'$server'#g"
+                )
+
+                if [ "$rewritten" = "$command" ]; then
+                    printf '%s\n' "Could not parse Zed remote-server command" >&2
+                    exit 126
+                fi
+
+                exec /bin/sh -c "$rewritten"
+                ;;
+        esac
+        ;;
+esac
+
+exec /bin/sh -c "$command"
