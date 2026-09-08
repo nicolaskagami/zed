@@ -1,24 +1,110 @@
+use calloop::PostAction;
 #[cfg(not(target_os = "illumos"))]
 use calloop::channel::Sender;
-use calloop::{EventLoop, PostAction, channel, timer::TimeoutAction};
+#[cfg(not(target_os = "illumos"))]
+use calloop::{EventLoop, channel, timer::TimeoutAction};
+#[cfg(not(target_os = "illumos"))]
 use gpui_util::ResultExt;
 
-use std::{mem::MaybeUninit, thread, time::Duration};
+#[cfg(target_os = "illumos")]
+use super::illumos_ping as ping;
+#[cfg(not(target_os = "illumos"))]
+use calloop::ping;
+
+#[cfg(not(target_os = "illumos"))]
+use std::mem::MaybeUninit;
+use std::{thread, time::Duration};
+
+#[cfg(target_os = "illumos")]
+use std::{cmp::Ordering, collections::BinaryHeap, sync::mpsc, time::Instant};
 
 use gpui::{
     PlatformDispatcher, Priority, PriorityQueueReceiver, PriorityQueueSender, RunnableVariant,
     profiler,
 };
 
-struct TimerAfter {
+struct TimerAfter<T = RunnableVariant> {
     duration: Duration,
-    runnable: RunnableVariant,
+    runnable: T,
 }
 
 #[cfg(target_os = "illumos")]
-type TimerSender = PriorityQueueCalloopSender<TimerAfter>;
+type TimerSender = mpsc::Sender<TimerAfter>;
 #[cfg(not(target_os = "illumos"))]
 type TimerSender = Sender<TimerAfter>;
+
+#[cfg(target_os = "illumos")]
+struct ScheduledTimer<T> {
+    deadline: Instant,
+    sequence: u64,
+    runnable: T,
+}
+
+#[cfg(target_os = "illumos")]
+impl<T> PartialEq for ScheduledTimer<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.sequence == other.sequence
+    }
+}
+
+#[cfg(target_os = "illumos")]
+impl<T> Eq for ScheduledTimer<T> {}
+
+#[cfg(target_os = "illumos")]
+impl<T> PartialOrd for ScheduledTimer<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(target_os = "illumos")]
+impl<T> Ord for ScheduledTimer<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .deadline
+            .cmp(&self.deadline)
+            .then_with(|| other.sequence.cmp(&self.sequence))
+    }
+}
+
+#[cfg(target_os = "illumos")]
+fn run_illumos_timer_queue<T>(
+    receiver: mpsc::Receiver<TimerAfter<T>>,
+    mut fire: impl FnMut(T),
+) -> Vec<T> {
+    let mut timers = BinaryHeap::<ScheduledTimer<T>>::new();
+    let mut sequence = 0u64;
+
+    loop {
+        let now = Instant::now();
+        while timers.peek().is_some_and(|timer| timer.deadline <= now) {
+            let timer = timers.pop().expect("timer heap was not empty");
+            fire(timer.runnable);
+        }
+
+        let timer = if let Some(next) = timers.peek() {
+            match receiver.recv_timeout(next.deadline.saturating_duration_since(Instant::now())) {
+                Ok(timer) => timer,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match receiver.recv() {
+                Ok(timer) => timer,
+                Err(_) => break,
+            }
+        };
+
+        timers.push(ScheduledTimer {
+            deadline: Instant::now() + timer.duration,
+            sequence,
+            runnable: timer.runnable,
+        });
+        sequence = sequence.wrapping_add(1);
+    }
+
+    timers.into_iter().map(|timer| timer.runnable).collect()
+}
 
 pub(crate) struct LinuxDispatcher {
     main_sender: PriorityQueueCalloopSender<RunnableVariant>,
@@ -57,7 +143,30 @@ impl LinuxDispatcher {
         #[cfg(not(target_os = "illumos"))]
         let (timer_sender, timer_channel) = calloop::channel::channel::<TimerAfter>();
         #[cfg(target_os = "illumos")]
-        let (timer_sender, timer_channel) = PriorityQueueCalloopReceiver::<TimerAfter>::new();
+        let (timer_sender, timer_channel) = mpsc::channel::<TimerAfter>();
+
+        #[cfg(target_os = "illumos")]
+        let timer_thread = std::thread::Builder::new()
+            .name("Timer".to_owned())
+            .spawn(move || {
+                let pending =
+                    run_illumos_timer_queue(timer_channel, |runnable: RunnableVariant| {
+                        let location = runnable.metadata().location;
+                        let spawned = runnable.metadata().spawned;
+                        profiler::update_running_task(spawned, location);
+                        runnable.run();
+                        profiler::save_task_timing();
+                    });
+
+                // Dropping a scheduled runnable cancels its task and makes the next poll of any
+                // awaiter panic. Keep pending tasks pending while the process shuts down.
+                for runnable in pending {
+                    std::mem::forget(runnable);
+                }
+            })
+            .unwrap();
+
+        #[cfg(not(target_os = "illumos"))]
         let timer_thread = std::thread::Builder::new()
             .name("Timer".to_owned())
             .spawn(move || {
@@ -133,12 +242,7 @@ impl PlatformDispatcher for LinuxDispatcher {
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
-        #[cfg(not(target_os = "illumos"))]
         let result = self.timer_sender.send(TimerAfter { duration, runnable });
-        #[cfg(target_os = "illumos")]
-        let result = self
-            .timer_sender
-            .send(Priority::Medium, TimerAfter { duration, runnable });
 
         if let Err(err) = result {
             // The timer thread has shut down. Dropping a scheduled runnable cancels its task
@@ -179,11 +283,11 @@ impl PlatformDispatcher for LinuxDispatcher {
 
 pub struct PriorityQueueCalloopSender<T> {
     sender: PriorityQueueSender<T>,
-    ping: calloop::ping::Ping,
+    ping: ping::Ping,
 }
 
 impl<T> PriorityQueueCalloopSender<T> {
-    fn new(tx: PriorityQueueSender<T>, ping: calloop::ping::Ping) -> Self {
+    fn new(tx: PriorityQueueSender<T>, ping: ping::Ping) -> Self {
         Self { sender: tx, ping }
     }
 
@@ -204,13 +308,13 @@ impl<T> Drop for PriorityQueueCalloopSender<T> {
 
 pub struct PriorityQueueCalloopReceiver<T> {
     receiver: PriorityQueueReceiver<T>,
-    source: calloop::ping::PingSource,
-    ping: calloop::ping::Ping,
+    source: ping::PingSource,
+    ping: ping::Ping,
 }
 
 impl<T> PriorityQueueCalloopReceiver<T> {
     pub fn new() -> (PriorityQueueCalloopSender<T>, Self) {
-        let (ping, source) = calloop::ping::make_ping().expect("Failed to create a Ping.");
+        let (ping, source) = ping::make_ping().expect("Failed to create a Ping.");
 
         let (tx, rx) = PriorityQueueReceiver::new();
 
@@ -228,7 +332,7 @@ impl<T> PriorityQueueCalloopReceiver<T> {
 use calloop::channel::Event;
 
 #[derive(Debug)]
-pub struct ChannelError(calloop::ping::PingError);
+pub struct ChannelError(ping::PingError);
 
 impl std::fmt::Display for ChannelError {
     #[cfg_attr(feature = "nightly_coverage", coverage(off))]
@@ -259,17 +363,13 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
-        // Illumos event ports can deliver a stale readiness notification after
-        // calloop re-arms this level-triggered pipe. Unless the pipe actually
-        // contains a ping, do not turn that notification into another ping.
-        let mut clear_readiness = true;
+        let mut clear_readiness = false;
         let mut disconnected = false;
 
         let action = self
             .source
             .process_events(readiness, token, |(), &mut ()| {
                 let mut is_empty = true;
-                clear_readiness = false;
 
                 let receiver = self.receiver.clone();
                 for runnable in receiver.try_iter() {
@@ -301,7 +401,7 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
         } else {
             // Re-notify the ping source so we can try again.
             self.ping.ping();
-            Ok(PostAction::Continue)
+            Ok(action)
         }
     }
 
@@ -329,6 +429,51 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "illumos")]
+    #[test]
+    fn illumos_timer_queue_survives_burst_and_idle() {
+        let (timer_tx, timer_rx) = mpsc::channel();
+        let (fired_tx, fired_rx) = mpsc::channel();
+        let timer_thread = thread::spawn(move || {
+            run_illumos_timer_queue(timer_rx, move |value| {
+                fired_tx.send(value).unwrap();
+            })
+        });
+
+        const TIMER_COUNT: usize = 512;
+        for value in 0..TIMER_COUNT {
+            timer_tx
+                .send(TimerAfter {
+                    duration: Duration::from_millis((value % 4) as u64),
+                    runnable: value,
+                })
+                .unwrap();
+        }
+
+        let mut seen = vec![false; TIMER_COUNT];
+        for _ in 0..TIMER_COUNT {
+            let value = fired_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(!seen[value], "timer {value} fired twice");
+            seen[value] = true;
+        }
+        assert!(seen.into_iter().all(|fired| fired));
+
+        thread::sleep(Duration::from_millis(50));
+        timer_tx
+            .send(TimerAfter {
+                duration: Duration::from_millis(10),
+                runnable: usize::MAX,
+            })
+            .unwrap();
+        assert_eq!(
+            fired_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            usize::MAX
+        );
+
+        drop(timer_tx);
+        assert!(timer_thread.join().unwrap().is_empty());
+    }
 
     #[test]
     fn calloop_works() {

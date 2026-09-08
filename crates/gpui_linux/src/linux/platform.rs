@@ -1260,7 +1260,9 @@ pub(super) fn compositor_gpu_hint_from_dev_t(dev: u64) -> Option<gpui_wgpu::Comp
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "wayland", feature = "x11"))]
     use super::*;
+    #[cfg(any(feature = "wayland", feature = "x11"))]
     use gpui::{Point, px};
 
     #[cfg(any(feature = "wayland", feature = "x11"))]
@@ -1280,6 +1282,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(feature = "wayland", feature = "x11"))]
     #[test]
     fn test_is_within_click_distance() {
         let zero = Point::new(px(0.0), px(0.0));

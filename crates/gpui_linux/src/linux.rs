@@ -1,5 +1,7 @@
 mod dispatcher;
 mod headless;
+#[cfg(target_os = "illumos")]
+mod illumos_ping;
 mod keyboard;
 mod platform;
 mod system_notifications;

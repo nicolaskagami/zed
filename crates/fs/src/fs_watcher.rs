@@ -13,6 +13,12 @@ use util::{ResultExt, paths::SanitizedPath};
 
 use crate::{PathEvent, PathEventKind, Watcher};
 
+#[cfg(target_os = "illumos")]
+mod illumos_watcher;
+
+#[cfg(target_os = "illumos")]
+const ILLUMOS_FEN_EVENT: &str = "zed:illumos-fen";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum WatcherMode {
     #[default]
@@ -203,13 +209,7 @@ pub fn requires_poll_watcher(path: &Path) -> bool {
         return detect_requires_poll_watcher_linux(path);
     }
 
-    #[cfg(target_os = "illumos")]
-    {
-        let _ = path;
-        return true;
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "illumos")))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = path;
         false
@@ -581,11 +581,20 @@ fn push_notify_event(
     watched_root: &Path,
     event: &notify::Event,
 ) {
-    let kind = match event.kind {
-        EventKind::Create(_) => Some(PathEventKind::Created),
-        EventKind::Modify(_) => Some(PathEventKind::Changed),
-        EventKind::Remove(_) => Some(PathEventKind::Removed),
-        _ => None,
+    #[cfg(target_os = "illumos")]
+    let is_illumos_fen_event = event.info() == Some(ILLUMOS_FEN_EVENT);
+    #[cfg(not(target_os = "illumos"))]
+    let is_illumos_fen_event = false;
+
+    let kind = if is_illumos_fen_event {
+        Some(PathEventKind::Rescan)
+    } else {
+        match event.kind {
+            EventKind::Create(_) => Some(PathEventKind::Created),
+            EventKind::Modify(_) => Some(PathEventKind::Changed),
+            EventKind::Remove(_) => Some(PathEventKind::Removed),
+            _ => None,
+        }
     };
     let mut path_events = event
         .paths
@@ -1063,11 +1072,19 @@ impl GlobalWatcher {
             // file read in a watched directory would queue events, increasing the
             // risk of queue overflows (and thus full rescans) under read-heavy
             // workloads like grep or language server indexing.
-            let config = notify::Config::default().with_event_kinds(notify::EventKindMask::CORE);
-            let watcher = <notify::RecommendedWatcher as notify::Watcher>::new(
-                |event| global_watcher().enqueue(WatcherMode::Native, event),
-                config,
-            )?;
+            #[cfg(target_os = "illumos")]
+            let watcher = illumos_watcher::IllumosWatcher::new(|event| {
+                global_watcher().enqueue(WatcherMode::Native, event)
+            })?;
+            #[cfg(not(target_os = "illumos"))]
+            let watcher = {
+                let config =
+                    notify::Config::default().with_event_kinds(notify::EventKindMask::CORE);
+                <notify::RecommendedWatcher as notify::Watcher>::new(
+                    |event| global_watcher().enqueue(WatcherMode::Native, event),
+                    config,
+                )?
+            };
             *native_watcher = Some(Box::new(watcher));
         }
         Ok(())
