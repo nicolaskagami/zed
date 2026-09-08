@@ -1,8 +1,6 @@
-use calloop::{
-    EventLoop, PostAction,
-    channel::{self, Sender},
-    timer::TimeoutAction,
-};
+#[cfg(not(target_os = "illumos"))]
+use calloop::channel::Sender;
+use calloop::{EventLoop, PostAction, channel, timer::TimeoutAction};
 use gpui_util::ResultExt;
 
 use std::{mem::MaybeUninit, thread, time::Duration};
@@ -17,9 +15,14 @@ struct TimerAfter {
     runnable: RunnableVariant,
 }
 
+#[cfg(target_os = "illumos")]
+type TimerSender = PriorityQueueCalloopSender<TimerAfter>;
+#[cfg(not(target_os = "illumos"))]
+type TimerSender = Sender<TimerAfter>;
+
 pub(crate) struct LinuxDispatcher {
     main_sender: PriorityQueueCalloopSender<RunnableVariant>,
-    timer_sender: Sender<TimerAfter>,
+    timer_sender: TimerSender,
     background_sender: PriorityQueueSender<RunnableVariant>,
     _background_threads: Vec<thread::JoinHandle<()>>,
     main_thread_id: thread::ThreadId,
@@ -51,7 +54,10 @@ impl LinuxDispatcher {
             })
             .collect::<Vec<_>>();
 
+        #[cfg(not(target_os = "illumos"))]
         let (timer_sender, timer_channel) = calloop::channel::channel::<TimerAfter>();
+        #[cfg(target_os = "illumos")]
+        let (timer_sender, timer_channel) = PriorityQueueCalloopReceiver::<TimerAfter>::new();
         let timer_thread = std::thread::Builder::new()
             .name("Timer".to_owned())
             .spawn(move || {
@@ -127,7 +133,14 @@ impl PlatformDispatcher for LinuxDispatcher {
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: RunnableVariant) {
-        if let Err(err) = self.timer_sender.send(TimerAfter { duration, runnable }) {
+        #[cfg(not(target_os = "illumos"))]
+        let result = self.timer_sender.send(TimerAfter { duration, runnable });
+        #[cfg(target_os = "illumos")]
+        let result = self
+            .timer_sender
+            .send(Priority::Medium, TimerAfter { duration, runnable });
+
+        if let Err(err) = result {
             // The timer thread has shut down. Dropping a scheduled runnable cancels its task
             // and makes the next poll of any awaiter panic. Leaking leaves the task pending,
             // which is acceptable during shutdown.
@@ -246,13 +259,17 @@ impl<T> calloop::EventSource for PriorityQueueCalloopReceiver<T> {
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
-        let mut clear_readiness = false;
+        // Illumos event ports can deliver a stale readiness notification after
+        // calloop re-arms this level-triggered pipe. Unless the pipe actually
+        // contains a ping, do not turn that notification into another ping.
+        let mut clear_readiness = true;
         let mut disconnected = false;
 
         let action = self
             .source
             .process_events(readiness, token, |(), &mut ()| {
                 let mut is_empty = true;
+                clear_readiness = false;
 
                 let receiver = self.receiver.clone();
                 for runnable in receiver.try_iter() {
