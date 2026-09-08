@@ -203,7 +203,13 @@ pub fn requires_poll_watcher(path: &Path) -> bool {
         return detect_requires_poll_watcher_linux(path);
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "illumos")]
+    {
+        let _ = path;
+        return true;
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "illumos")))]
     {
         let _ = path;
         false
